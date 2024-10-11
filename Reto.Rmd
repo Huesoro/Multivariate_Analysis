@@ -1,0 +1,103 @@
+---
+title: "Predicción PM2.5"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+### Base de datos
+```{r}
+library(MASS)
+M = read.csv("df_time_serie_2022.csv")
+head(M)
+```
+
+Solamente se realiza el análisis con la estación sureste por cuestiones de tiempo de cómputo.
+```{r}
+#Selección de los datos correspondientes a la estación sureste
+M1 <- subset(M, select = 1:15)
+
+#La fecha se convierte a objeto
+M1$FECHA <- as.POSIXct(M1$FECHA)
+
+#La fecha se convierte a variable numérica
+M1$FECHA <- as.numeric(M1$FECHA)
+
+#Se escalan los datos y se almacenan en un dataframe
+Mstand = scale(x = M1, center = TRUE, scale = TRUE)
+M_12=data.frame(Mstand)
+```
+
+**Separación de datos en entrenamiento y prueba**
+```{r}
+# Separar los datos en 80% para entrenamiento y 20% para prueba
+set.seed(123)  # Para reproducibilidad
+sample_indices <- sample(seq_len(nrow(M_12)), size = 0.8 * nrow(M_12))
+
+train_data <- M_12[sample_indices, ]
+test_data <- M_12[-sample_indices, ]
+```
+
+
+## Análisis de Componentes Principales
+```{r}
+summary(prcomp(train_data, scale = TRUE))
+```
+
+#### Gráficos complementarios
+```{r}
+library(FactoMineR)
+library(ggplot2) 
+datos=train_data
+cpS = PCA(datos,scale.unit=FALSE)
+library(factoextra)
+fviz_pca_var(cpS, col.var = "red", addEllipses = TRUE, repel = TRUE)
+fviz_screeplot(cpS)
+fviz_contrib(cpS, choice = "var")
+```
+
+
+## Regresión múltiple
+### Variables por pasos
+```{r}
+#Modelo de regresión múltiple
+modelo=lm(train_data$SURESTE.PM2.5..UG.M3.~., data = train_data)
+
+#AIC
+AIC <- step(modelo, direction="both" , trace=1) 
+summary(AIC)
+```
+
+
+##Predicciones del modelo
+Se realizan las predicciones del modelo obtenido por el método de AIC. Para los resultados, se muestran las predicciones con base en el tiempo. Recordemos que las fechas se estandarizó por lo que su rango no es el de la base original. 
+
+```{r}
+# Predicciones
+predicciones <- predict(AIC, newdata = test_data)
+
+# Dataframe para los resultados
+resultados <- data.frame(
+  FECHA = test_data$FECHA,
+  Real = test_data$SURESTE.PM2.5..UG.M3.,
+  Prediccion = predicciones
+)
+
+# Graficar los resultados
+ggplot(resultados, aes(x = FECHA)) +
+  geom_line(aes(y = Real, color = "Real"), size = 1) +
+  geom_line(aes(y = Prediccion, color = "Predicción"), size = 1, linetype = "dashed") +
+  labs(title = "Predicción de PM2.5",
+       x = "Fecha",
+       y = "Concentración de PM2.5 (µg/m³)") +
+  scale_color_manual(name = " ", values = c("Real" = "blue", "Predicción" = "red")) +
+  theme_minimal()
+
+```
+
