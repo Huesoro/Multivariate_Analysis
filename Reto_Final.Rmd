@@ -1,0 +1,178 @@
+---
+title: "Predicción PM2.5"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+### Base de datos
+```{r}
+library(MASS)
+library(lmtest)
+library(nortest)
+M = read.csv("df_time_serie_2022.csv")
+head(M)
+```
+
+Solamente se realiza el análisis con la estación sureste por cuestiones de tiempo de cómputo.
+```{r}
+#Selección de los datos correspondientes a la estación sureste
+M1 <- subset(M, select = 1:15)
+
+#La fecha se convierte a objeto
+M1$FECHA <- as.POSIXct(M1$FECHA)
+
+#La fecha se convierte a variable numérica
+M1$FECHA <- as.numeric(M1$FECHA)
+
+#Se escalan los datos y se almacenan en un dataframe
+Mstand = scale(x = M1, center = TRUE, scale = TRUE)
+M_12=data.frame(Mstand)
+```
+
+**Separación de datos en entrenamiento y prueba**
+```{r}
+# Separar los datos en 80% para entrenamiento y 20% para prueba
+set.seed(123)  # Para reproducibilidad
+sample_indices <- sample(seq_len(nrow(M_12)), size = 0.8 * nrow(M_12))
+
+train_data <- M_12[sample_indices, ]
+test_data <- M_12[-sample_indices, ]
+```
+
+
+## Regresión múltiple
+### Variables por pasos
+```{r}
+#Modelo de regresión múltiple
+modelo=lm(train_data$SURESTE.PM2.5..UG.M3.~., data = train_data)
+
+#AIC
+AIC <- step(modelo, direction="both" , trace=1) 
+summary(AIC)
+```
+
+
+##Predicciones del modelo
+Se realizan las predicciones del modelo obtenido por el método de AIC. Para los resultados, se muestran las predicciones con base en el tiempo. Recordemos que las fechas se estandarizó por lo que su rango no es el de la base original. 
+
+```{r}
+# Predicciones
+predicciones <- predict(AIC, newdata = test_data)
+
+# Dataframe para los resultados
+resultados <- data.frame(
+  FECHA = test_data$FECHA,
+  Real = test_data$SURESTE.PM2.5..UG.M3.,
+  Prediccion = predicciones
+)
+
+# Graficar los resultados
+ggplot(resultados, aes(x = FECHA)) +
+  geom_line(aes(y = Real, color = "Real"), size = 1) +
+  geom_line(aes(y = Prediccion, color = "Predicción"), size = 1, linetype = "dashed") +
+  labs(title = "Predicción de PM2.5 para estación Sureste",
+       x = "Fecha",
+       y = "Concentración de PM2.5 (µg/m³)") +
+  scale_color_manual(name = " ", values = c("Real" = "blue", "Predicción" = "red")) +
+  theme_minimal()
+
+```
+A continuación se prueban los supuestos.
+
+### Análisis de residuales
+A continuación se validará si los residuales siguen una distribución Normal con media cero y varianza constante.
+
+#### Media cero
+Se realiza una prueba de hipótesis para media.
+
+$H_0: \mu_R=0$
+
+$H_1:\mu_R\neq 0$
+
+$\alpha=0.05$
+
+```{r}
+#prueba t.test con los residuales
+t.test(AIC$residuals, mu=0, alternative="two.sided")
+```
+Como el p-valor >> 0.05, la evidencia sugiere que la media de los residuales es cero.
+
+
+#### Normalidad de residuales
+Se realiza un test de Normalidad
+
+$H_0$: Los residuales (datos) tienen distribución Normal
+
+$H_1$: No provienen de una distribución Normal
+
+```{r}
+#Test de normalidad 
+ad.test(AIC$residuals)
+```
+
+Como el p-valor es menor a 0.05, se rechaza la hipótesis nula, por lo que podemos suponer que los residuales no tienen una distribución normal.
+
+```{r}
+##Gráficos complementarios
+qqnorm(AIC$residuals)
+qqline(AIC$residuals, col="red")
+```
+
+En el gráfico de QQplot vemos que los cuantiles se ajustan a la línea en su mayoría. Sin embargo, al final existen datos que se alejan, lo que podría indicar una distribución platicúrtica con colas gruesas. En consecuencia a esto, se considera que los residuales no siguen una distribución normal.
+
+### Homocedasticidad
+
+La varianza de los residuos debe de ser constante en todo el rango de observaciones. Para comprobarlo graficaremos los residuales de las estimaciones de la regresión para observar si se distribuyen de forma aleatoria manteniendo una misma dispersión y sin ningún patrón específico a lo largo del eje horizontal (media cero).
+
+
+```{r}
+#Gráfico de residuales frente a los valores predichos
+plot(AIC$fitted.values,AIC$residuals, main = "Gráfico de residuales vs predicciones", xlab="valores ajustados", ylab = "valores residuales")
+abline(h=0, col="red")
+
+
+```
+Los gráficos presentan una distribución parcialmente homogénea de los residuales alrededor de la media. La prueba de Breusch-Paga se implementa para evaluar si los residuales son función lineal de las covariables del modelo.
+
+$H_0:$ La varianza de los errores es constante (homocedasticidad)
+$H_1:$ La varianza de los errores no es constante (heterocedasticidad)
+
+```{r}
+#Prueba Breusch-Pagan:
+bptest(AIC)
+
+```
+La prueba de Breusch-Pagan concluye que se rechaza la hipótesis nula y se sugiere que hay heterocedasticidad.
+
+
+### Independencia 
+
+Se representarán los residuos ordenados acorde al tiempo de registro de las observaciones para observar si existe algún patrón.
+
+
+```{r}
+n=length(train_data$SURESTE.PM2.5..UG.M3.)
+plot (c(1:n), AIC$residuals, col="blue")
+abline(h=0, col="red")
+```
+
+Dentro del gráfico se puede observar que los residuos se distribuyen homogéneamente alrededor de la media. Se realizará la prueba de Durbin-Watson para detectar presencia de autocorrelación de los residuos en un esquema autorregresivo de primer orden. Por otra parte, la prueba Breusch-Godfrey evalúa la autocorrelación de los residuos con un esquema autorregresivo con órdenes superiores.
+
+$H_0:$ Los residuos no están correlacionados
+$H_1:$ Los residuos están correlacionados
+
+```{r}
+#Prueba Durbin-Watson
+dwtest(AIC)
+
+#Prueba Breusch-Godfrey
+bgtest(AIC)
+```
+Las pruebas de hipótesis tienen como resultado ambas un p-valor mayor a 0.05, de modo que se puede suponer la independencia de los residuos.
